@@ -1,100 +1,77 @@
 import os
 import smtplib
-import ssl
 from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from datetime import datetime, timedelta
 from serpapi import GoogleSearch
+from datetime import datetime, timedelta
+import dateparser
 
-# Load environment variables
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
-EMAIL_SENDER = "ham19902008@gmail.com"
-EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # FIXED name to match GitHub secret
+# Keywords to track
+keywords = ["Malaysia energy", "renewables Malaysia", "solar Malaysia", "Tenaga Nasional Berhad"]
 
-EMAIL_RECIPIENTS = [
-    "ham19902008@gmail.com",
-    "graham.tan@shizenenergy.net"
-]
+# Load API key and email credentials
+serpapi_api_key = os.environ["SERPAPI_API_KEY"]
+email_address = "ham19902008@gmail.com"
+email_password = os.environ["EMAIL_APP_PASSWORD"]
+recipients = ["ham19902008@gmail.com", "graham.tan@shizenenergy.net"]
 
-# Debugging: Check if password is loaded
-if not EMAIL_PASSWORD:
-    print("❌ EMAIL_APP_PASSWORD environment variable not found!")
-else:
-    print("✅ EMAIL_APP_PASSWORD found")
-
-# Keywords to search
-keywords = [
-    "renewable energy malaysia",
-    "solar malaysia",
-    "corporate renewable energy supply scheme malaysia",
-    "cress malaysia",
-    "ppa malaysia",
-    "rp4 malaysia",
-    "review period 4 malaysia",
-    "energy commission malaysia",
-    "suruhanjaya tenaga",
-    "electricity malaysia",
-    "electricity tariff malaysia",
-    "energy malaysia",
-    "voltage malaysia"
-]
-
-# Limit date to last 30 days
-start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-
-# Collect results
-articles = []
-
-for keyword in keywords:
-    params = {
-        "engine": "google",
+# Function to fetch articles
+def get_articles(keyword):
+    search = GoogleSearch({
         "q": keyword,
-        "location": "Malaysia",
-        "api_key": SERPAPI_API_KEY,
-        "num": "20"
-    }
-
-    search = GoogleSearch(params)
+        "api_key": serpapi_api_key,
+        "engine": "google",
+        "num": 30
+    })
     results = search.get_dict()
-    organic_results = results.get("organic_results", [])
+    return results.get("news_results", [])
 
-    for result in organic_results:
-        title = result.get("title")
-        link = result.get("link")
-        date = result.get("date", "")
-        if title and link:
-            articles.append((date, title, link))
+# Filter articles by last 30 days
+def filter_recent_articles(articles, days=30):
+    cutoff = datetime.now() - timedelta(days=days)
+    filtered = []
+    for article in articles:
+        parsed_date = dateparser.parse(article.get("date", ""), settings={'TIMEZONE': 'Asia/Tokyo'})
+        if parsed_date and parsed_date > cutoff:
+            article["parsed_date"] = parsed_date
+            filtered.append(article)
+    return sorted(filtered, key=lambda x: x["parsed_date"], reverse=True)
 
-# Sort by most recent date (if possible)
-def parse_date(d):
-    try:
-        return datetime.strptime(d, "%b %d, %Y")
-    except:
-        return datetime.min
+# Format email content
+def build_email_body(all_articles):
+    lines = []
+    for art in all_articles:
+        date_str = art['parsed_date'].strftime('%Y-%m-%d') if 'parsed_date' in art else 'Unknown Date'
+        lines.append(f"{date_str} - {art['title']}\n{art['link']}\n")
+    return "\n".join(lines) or "No new articles in the past 30 days."
 
-articles.sort(key=lambda x: parse_date(x[0]), reverse=True)
-
-# Create email content
-email_body = "📰 <b>Daily Malaysia Energy News Summary</b><br><br>"
-for date, title, link in articles:
-    email_body += f"{date} - <a href='{link}'>{title}</a><br>"
-
-# Build MIME email
-message = MIMEMultipart("alternative")
-message["Subject"] = "Daily Malaysia Energy News Summary"
-message["From"] = EMAIL_SENDER
-message["To"] = ", ".join(EMAIL_RECIPIENTS)
-
-mime_text = MIMEText(email_body, "html")
-message.attach(mime_text)
+# Fetch and combine all articles
+def gather_articles():
+    combined = []
+    for kw in keywords:
+        articles = get_articles(kw)
+        recent = filter_recent_articles(articles)
+        combined.extend(recent)
+    return sorted(combined, key=lambda x: x["parsed_date"], reverse=True)
 
 # Send email
-try:
-    print("📤 Preparing to send email...")
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.sendmail(EMAIL_SENDER, EMAIL_RECIPIENTS, message.as_string())
-    print("✅ Email sent successfully!")
-except Exception as e:
-    print("❌ Failed to send email:", e)
+def send_email(subject, body):
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = email_address
+    msg["To"] = ", ".join(recipients)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(email_address, email_password)
+            server.sendmail(email_address, recipients, msg.as_string())
+            print("✅ Email sent successfully!")
+    except Exception as e:
+        print(f"❌ Failed to send email: {e}")
+
+# Main flow
+if __name__ == "__main__":
+    print("📡 Starting article collection...")
+    articles = gather_articles()
+    print(f"📰 Found {len(articles)} articles from the past 30 days.")
+    body = build_email_body(articles)
+    send_email("🇲🇾 Malaysia Energy News - Daily Digest", body)
