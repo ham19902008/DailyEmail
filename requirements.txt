@@ -6,3 +6,5 @@ python-dotenv
 requests
 beautifulsoup4
 serpapi
+python-dateutil
+dateparser
