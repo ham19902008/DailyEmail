@@ -1,93 +1,132 @@
 import os
-import datetime
 import smtplib
-from email.mime.text import MIMEText
+from email.message import EmailMessage
 from serpapi import GoogleSearch
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from main import KEYWORDS  # Make sure this exists and is populated
+import openai
 
+# Load environment variables
 load_dotenv()
-
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-RECIPIENTS = os.getenv("RECIPIENTS", "").split(",")
 
-def fetch_recent_articles():
-    all_articles = []
-    cutoff_date = datetime.datetime.now() - datetime.timedelta(days=30)
+openai.api_key = OPENAI_API_KEY
 
-    for keyword in KEYWORDS:
-        print(f"🔍 Scraping news for keyword: {keyword}")
-        search = GoogleSearch({
+# Define keywords here directly
+KEYWORDS = [
+    "renewables Malaysia",
+    "solar Malaysia",
+    "Tenaga Nasional Berhad",
+    "TNB green energy",
+    "Malaysia energy transition",
+    "hydropower Malaysia",
+    "energy policy Malaysia",
+    "carbon neutrality Malaysia",
+    "battery storage Malaysia",
+    "EV Malaysia",
+    "Petronas hydrogen",
+    "clean energy Malaysia"
+]
+
+def search_articles(keywords, max_articles=30):
+    articles = []
+    cutoff_date = datetime.now() - timedelta(days=1)
+    print("🔍 Scraping news...")
+
+    for keyword in keywords:
+        params = {
+            "engine": "google",
             "q": keyword,
             "tbm": "nws",
             "api_key": SERPAPI_API_KEY
-        })
-
+        }
+        search = GoogleSearch(params)
         results = search.get_dict()
-        print(f"📦 Raw results for '{keyword}':", results)  # Debug line
-        articles = results.get("news_results", [])
+        news_results = results.get("news_results", [])
+        
+        for result in news_results:
+            try:
+                date_str = result.get("date", "")
+                link = result.get("link")
+                title = result.get("title")
 
-        for article in articles:
-            title = article.get("title")
-            link = article.get("link")
-            date_str = article.get("date", "").strip()
-            print(f"🗓️  Found date string: '{date_str}'")  # Debug line
+                # Parse date string to datetime
+                published = parse_date(date_str)
+                if published and published > cutoff_date:
+                    articles.append({
+                        "title": title,
+                        "link": link,
+                        "published": published.strftime('%Y-%m-%d %H:%M'),
+                        "keyword": keyword
+                    })
+                    if len(articles) >= max_articles:
+                        return articles
+            except Exception as e:
+                print(f"❗ Error parsing article: {e}")
+                continue
 
-            # Parse date string
-            pub_date = parse_date_string(date_str)
-            if pub_date and pub_date > cutoff_date:
-                all_articles.append({
-                    "keyword": keyword,
-                    "title": title,
-                    "link": link,
-                    "date": pub_date.strftime("%Y-%m-%d")
-                })
+    return articles
 
-    return sorted(all_articles, key=lambda x: x["date"], reverse=True)
-
-def parse_date_string(date_str):
-    now = datetime.datetime.now()
-
+def parse_date(date_str):
+    now = datetime.now()
+    if "hour" in date_str or "min" in date_str:
+        return now
+    if "day ago" in date_str or "days ago" in date_str:
+        days = int(date_str.split()[0])
+        return now - timedelta(days=days)
     try:
-        if "hour" in date_str or "minute" in date_str:
-            return now
-        elif "day" in date_str:
-            days = int(date_str.split()[0])
-            return now - datetime.timedelta(days=days)
-        elif "Yesterday" in date_str:
-            return now - datetime.timedelta(days=1)
-        else:
-            # Try direct parse
-            return datetime.datetime.strptime(date_str, "%b %d, %Y")
-    except Exception as e:
-        print(f"⚠️ Failed to parse date '{date_str}': {e}")
+        return datetime.strptime(date_str, "%b %d, %Y")
+    except:
         return None
 
+def summarize_text(text):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant who summarizes news articles."},
+                {"role": "user", "content": f"Summarize this article title and topic in 2-3 lines: {text}"}
+            ],
+            temperature=0.5,
+            max_tokens=100
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return f"(Summary failed: {e})"
+
 def send_email(articles):
-    if not articles:
-        print("⚠️ No recent articles found.")
-        return
-
-    body = "📰 Malaysia Energy News Summary\n\n"
-    for article in articles:
-        body += f"[{article['date']}] ({article['keyword']}) {article['title']}\n{article['link']}\n\n"
-
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = "Daily Energy News Digest - Malaysia"
+    msg = EmailMessage()
+    msg["Subject"] = "📰 Daily Malaysia Energy News Summary"
     msg["From"] = EMAIL_ADDRESS
-    msg["To"] = ", ".join(RECIPIENTS)
+    msg["To"] = ["ham19902008@gmail.com", "graham.tan@shizenenergy.net"]
+
+    if not articles:
+        msg.set_content("No recent articles found in the last 24 hours.")
+    else:
+        content = "Here are the latest articles:\n\n"
+        for article in articles:
+            summary = summarize_text(article["title"])
+            content += f"🗞️ *{article['title']}*\n🔗 {article['link']}\n📅 {article['published']}\n💡 {summary}\n\n"
+        msg.set_content(content)
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
-            smtp.sendmail(EMAIL_ADDRESS, RECIPIENTS, msg.as_string())
+            smtp.send_message(msg)
         print("✅ Email sent successfully.")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
 
+def main():
+    articles = search_articles(KEYWORDS, max_articles=30)
+    if not articles:
+        print("⚠️ No recent articles found.")
+    else:
+        print(f"✅ Found {len(articles)} recent articles.")
+    send_email(articles)
+
 if __name__ == "__main__":
-    print("🔍 Scraping news...")
-    recent_articles = fetch_recent_articles()
-    send_email(recent_articles)
+    main()
