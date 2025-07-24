@@ -1,0 +1,8 @@
+streamlit
+pandas
+openai
+google-search-results
+python-dotenv
+requests
+beautifulsoup4
+serpapi
