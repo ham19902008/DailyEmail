@@ -9,7 +9,7 @@ from serpapi import GoogleSearch
 # Load environment variables
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 EMAIL_SENDER = "ham19902008@gmail.com"
-EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # ✅ Corrected to match GitHub secret
+EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # Correct secret name
 
 EMAIL_RECIPIENTS = [
     "ham19902008@gmail.com",
@@ -39,11 +39,29 @@ keywords = [
     "voltage malaysia"
 ]
 
-# Start from 30 days ago
-start_cutoff = datetime.now() - timedelta(days=30)
+# Set time window
+start_cutoff = datetime.now() - timedelta(days=3)  # Capture last 3 days including today
 
 # Store articles with date
 articles = []
+
+def fuzzy_parse_date(date_str):
+    now = datetime.now()
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str, "%b %d, %Y")
+    except:
+        pass
+    try:
+        if "hour" in date_str or "minute" in date_str:
+            return now
+        elif "day ago" in date_str:
+            num = int(date_str.split()[0])
+            return now - timedelta(days=num)
+    except:
+        return None
+    return None
 
 for keyword in keywords:
     print(f"🔍 Searching: {keyword}")
@@ -61,50 +79,45 @@ for keyword in keywords:
     news_results = results.get("news_results", [])
     organic_results = results.get("organic_results", [])
 
-    def try_parse_date(text):
-        try:
-            return datetime.strptime(text, "%b %d, %Y")
-        except:
-            return None
-
-    # First try news_results
+    # Parse news_results
     for res in news_results:
         title = res.get("title")
         link = res.get("link")
         date_str = res.get("date")
-        pub_time = try_parse_date(date_str)
+        pub_time = fuzzy_parse_date(date_str)
         if title and link and pub_time and pub_time >= start_cutoff:
             articles.append((pub_time, title, link))
 
-    # Fall back to organic_results
+    # Parse organic_results
     for res in organic_results:
         title = res.get("title")
         link = res.get("link")
         date_str = res.get("date", "")
-        pub_time = try_parse_date(date_str)
+        pub_time = fuzzy_parse_date(date_str)
         if title and link and pub_time and pub_time >= start_cutoff:
             articles.append((pub_time, title, link))
 
-# Remove duplicates (by link)
-seen = set()
+# Remove duplicates
+seen_links = set()
 unique_articles = []
 for article in articles:
-    if article[2] not in seen:
-        seen.add(article[2])
+    if article[2] not in seen_links:
+        seen_links.add(article[2])
         unique_articles.append(article)
 
-# Sort by date (newest first)
+# Sort newest first
 unique_articles.sort(key=lambda x: x[0], reverse=True)
 
-# Create email HTML body
+# Build email body
 if unique_articles:
     email_body = "📰 <b>Daily Malaysia Energy News Summary</b><br><br>"
     for dt, title, link in unique_articles:
-        email_body += f"{dt.strftime('%Y-%m-%d')} - <a href='{link}'>{title}</a><br>"
+        formatted_date = dt.strftime('%Y-%m-%d')
+        email_body += f"{formatted_date} - <a href='{link}'>{title}</a><br>"
 else:
-    email_body = "⚠️ No new articles found in the last 30 days."
+    email_body = "⚠️ No new articles found in the last few days."
 
-# Construct email
+# Construct and send email
 message = MIMEMultipart("alternative")
 message["Subject"] = "Daily Malaysia Energy News Summary"
 message["From"] = EMAIL_SENDER
@@ -112,7 +125,6 @@ message["To"] = ", ".join(EMAIL_RECIPIENTS)
 mime_text = MIMEText(email_body, "html")
 message.attach(mime_text)
 
-# Send email
 try:
     print("📤 Sending email...")
     context = ssl.create_default_context()
