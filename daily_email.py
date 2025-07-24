@@ -13,7 +13,9 @@ EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # Correct secret name
 
 EMAIL_RECIPIENTS = [
     "ham19902008@gmail.com",
-    "graham.tan@shizenenergy.net"
+    "graham.tan@shizenenergy.net",
+    "reza.ikram@shizenenergy.net",
+    "redha.mahzar@shizenenergy.net"
 ]
 
 # Debug: Check if secrets are loaded
