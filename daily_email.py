@@ -42,7 +42,6 @@ KEYWORDS = [
        "Tenaga Nasional Berhad",
        "TNB", 
        "Ministry of Energy Transition and Water Transformation",
-       "PETRA",
        "Data center Malaysia",
 ]
 
