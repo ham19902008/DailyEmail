@@ -16,8 +16,8 @@ EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 EMAIL_RECIPIENTS = [
     "ham19902008@gmail.com",
     "graham.tan@shizenenergy.net",
-
-]
+       "reza.ikram@shizenenergy.net",
+       "redha.mahzar@shizenenergy.net"]
 
 if not EMAIL_PASSWORD:
     print("❌ EMAIL_APP_PASSWORD not found in environment!")
