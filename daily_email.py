@@ -1,31 +1,31 @@
 import os
+import re
 import smtplib
 import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from serpapi import GoogleSearch
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
-# Load environment variables
+# ---- Secrets / Email ----
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 EMAIL_SENDER = "ham19902008@gmail.com"
-EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")  # Correct secret name
+EMAIL_PASSWORD = os.getenv("EMAIL_APP_PASSWORD")
 
 EMAIL_RECIPIENTS = [
     "ham19902008@gmail.com",
     "graham.tan@shizenenergy.net",
-    "reza.ikram@shizenenergy.net",
-    "redha.mahzar@shizenenergy.net"
+
 ]
 
-# Debug: Check if secrets are loaded
 if not EMAIL_PASSWORD:
     print("❌ EMAIL_APP_PASSWORD not found in environment!")
 else:
     print("✅ EMAIL_APP_PASSWORD loaded.")
 
-# Define keywords
-keywords = [
+# ---- Keywords ----
+KEYWORDS = [
     "renewable energy malaysia",
     "solar malaysia",
     "corporate renewable energy supply scheme malaysia",
@@ -38,97 +38,193 @@ keywords = [
     "electricity malaysia",
     "electricity tariff malaysia",
     "energy malaysia",
-    "voltage malaysia"
+    "high voltage malaysia",
+       "Tenaga Nasional Berhad",
+       "TNB", 
+       "Ministry of Energy Transition and Water Transformation",
+       "PETRA",
+       "Data center Malaysia",
 ]
 
-# Set time window
-start_cutoff = datetime.now() - timedelta(days=3)  # Capture last 3 days including today
+# ---- Config ----
+LOOKBACK_DAYS = 7  # wider window to avoid misses due to timezones / late stamps
+START_CUTOFF = datetime.now() - timedelta(days=LOOKBACK_DAYS)
 
-# Store articles with date
-articles = []
+def strip_tracking(u: str) -> str:
+    """Remove common tracking params to improve de-duplication."""
+    try:
+        p = urlparse(u)
+        q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+             if not k.lower().startswith(("utm_", "gclid", "fbclid"))]
+        return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q), p.fragment))
+    except Exception:
+        return u
 
-def fuzzy_parse_date(date_str):
-    now = datetime.now()
+def parse_date(date_str: str):
+    """Parse absolute and relative dates found in SerpApi results."""
     if not date_str:
         return None
-    try:
-        return datetime.strptime(date_str, "%b %d, %Y")
-    except:
-        pass
-    try:
-        if "hour" in date_str or "minute" in date_str:
-            return now
-        elif "day ago" in date_str:
-            num = int(date_str.split()[0])
-            return now - timedelta(days=num)
-    except:
-        return None
+    s = date_str.strip()
+    now = datetime.now()
+
+    # Absolute formats
+    abs_formats = [
+        "%b %d, %Y",        # Aug 11, 2025
+        "%B %d, %Y",        # August 11, 2025
+        "%Y-%m-%d",         # 2025-08-11
+        "%b %d, %Y %I:%M %p",
+        "%B %d, %Y %I:%M %p",
+    ]
+    for fmt in abs_formats:
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+
+    # Normalize
+    sl = s.lower()
+
+    # Common words
+    if "yesterday" in sl:
+        return now - timedelta(days=1)
+    if "today" in sl:
+        return now
+
+    # Relative like "2 hours ago", "3 days ago", "1 week ago", "4 months ago", "2 years ago"
+    m = re.search(r"(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago", sl)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2)
+        if unit == "minute":
+            return now - timedelta(minutes=n)
+        if unit == "hour":
+            return now - timedelta(hours=n)
+        if unit == "day":
+            return now - timedelta(days=n)
+        if unit == "week":
+            return now - timedelta(weeks=n)
+        if unit == "month":
+            return now - timedelta(days=30*n)  # approx
+        if unit == "year":
+            return now - timedelta(days=365*n) # approx
+
+    # Fallback: if it mentions "hour" or "minute" without a number, treat as now
+    if "hour" in sl or "minute" in sl:
+        return now
+
     return None
 
-for keyword in keywords:
-    print(f"🔍 Searching: {keyword}")
+def fetch_google_news(keyword: str):
+    """Use SerpApi Google News engine (most reliable for fresh news)."""
+    params = {
+        "engine": "google_news",
+        "q": keyword,
+        "api_key": SERPAPI_API_KEY,
+        "gl": "my",            # country bias: Malaysia
+        "hl": "en",            # language
+        "when": "7d",          # last 7 days
+        "sort_by": "date",     # newest first
+        "num": "100",
+        "no_cache": "true",
+        "safe": "off",
+    }
+    return GoogleSearch(params).get_dict()
+
+def fetch_google_tbm_news(keyword: str):
+    """Fallback: Google web engine with tbm=nws (news tab)."""
     params = {
         "engine": "google",
         "q": keyword,
-        "location": "Malaysia",
         "api_key": SERPAPI_API_KEY,
-        "num": "30"
+        "gl": "my",
+        "hl": "en",
+        "tbm": "nws",
+        "num": "50",
+        "no_cache": "true",
+        "safe": "off",
     }
+    return GoogleSearch(params).get_dict()
 
-    search = GoogleSearch(params)
-    results = search.get_dict()
+def collect_articles():
+    items = []
 
-    news_results = results.get("news_results", [])
-    organic_results = results.get("organic_results", [])
+    for kw in KEYWORDS:
+        print(f"🔎 Google News: {kw}")
+        try:
+            gn = fetch_google_news(kw)
+        except Exception as e:
+            print("Google News fetch error:", e)
+            gn = {}
 
-    # Parse news_results
-    for res in news_results:
-        title = res.get("title")
-        link = res.get("link")
-        date_str = res.get("date")
-        pub_time = fuzzy_parse_date(date_str)
-        if title and link and pub_time and pub_time >= start_cutoff:
-            articles.append((pub_time, title, link))
+        # google_news returns typically 'news_results' and sometimes 'stories_results'
+        for res in gn.get("news_results", []):
+            title = res.get("title")
+            link = res.get("link")
+            date_str = res.get("date")
+            pub_time = parse_date(date_str)
+            if title and link and pub_time and pub_time >= START_CUTOFF:
+                items.append((pub_time, title, link))
 
-    # Parse organic_results
-    for res in organic_results:
-        title = res.get("title")
-        link = res.get("link")
-        date_str = res.get("date", "")
-        pub_time = fuzzy_parse_date(date_str)
-        if title and link and pub_time and pub_time >= start_cutoff:
-            articles.append((pub_time, title, link))
+        for story in gn.get("stories_results", []):
+            # story may have 'news_articles' list with similar fields
+            for art in story.get("news_articles", []):
+                title = art.get("title")
+                link = art.get("link")
+                date_str = art.get("date")
+                pub_time = parse_date(date_str)
+                if title and link and pub_time and pub_time >= START_CUTOFF:
+                    items.append((pub_time, title, link))
 
-# Remove duplicates
-seen_links = set()
-unique_articles = []
-for article in articles:
-    if article[2] not in seen_links:
-        seen_links.add(article[2])
-        unique_articles.append(article)
+        print(f"🔎 Google TBM=nws fallback: {kw}")
+        try:
+            tbm = fetch_google_tbm_news(kw)
+        except Exception as e:
+            print("Google tbm=nws fetch error:", e)
+            tbm = {}
 
-# Sort newest first
-unique_articles.sort(key=lambda x: x[0], reverse=True)
+        for res in tbm.get("news_results", []):
+            title = res.get("title")
+            link = res.get("link")
+            date_str = res.get("date")
+            pub_time = parse_date(date_str)
+            if title and link and pub_time and pub_time >= START_CUTOFF:
+                items.append((pub_time, title, link))
 
-# Build email body
-if unique_articles:
-    email_body = "📰 <b>Daily Malaysia Energy News Summary</b><br><br>"
-    for dt, title, link in unique_articles:
-        formatted_date = dt.strftime('%Y-%m-%d')
-        email_body += f"{formatted_date} - <a href='{link}'>{title}</a><br>"
-else:
-    email_body = "⚠️ No new articles found in the last few days."
+    # De-duplicate by stripped URL
+    seen = set()
+    uniq = []
+    for dt, title, link in items:
+        clean = strip_tracking(link)
+        if clean not in seen:
+            seen.add(clean)
+            uniq.append((dt, title, clean))
 
-# Construct and send email
+    # Sort newest first
+    uniq.sort(key=lambda x: x[0], reverse=True)
+    return uniq
+
+def build_email_body(articles):
+    if not articles:
+        return "⚠️ No new articles found in the last few days."
+
+    body = ["📰 <b>Daily Malaysia Energy News Summary</b><br><br>"]
+    for dt, title, link in articles:
+        # show timestamp (local) for transparency
+        body.append(f"{dt.strftime('%Y-%m-%d %H:%M')} — <a href='{link}'>{title}</a><br>")
+    return "".join(body)
+
+# ---- Run fetch + email ----
+articles = collect_articles()
+email_body = build_email_body(articles)
+
 message = MIMEMultipart("alternative")
 message["Subject"] = "Daily Malaysia Energy News Summary"
 message["From"] = EMAIL_SENDER
 message["To"] = ", ".join(EMAIL_RECIPIENTS)
-mime_text = MIMEText(email_body, "html")
-message.attach(mime_text)
+message.attach(MIMEText(email_body, "html"))
 
 try:
-    print("📤 Sending email...")
+    print(f"📤 Sending email... ({len(articles)} articles)")
     context = ssl.create_default_context()
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
